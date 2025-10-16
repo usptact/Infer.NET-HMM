@@ -39,8 +39,6 @@ A Factorial HMM extends the standard HMM with **multiple independent chains**:
 - **Signal processing**: Multiple independent signal sources
 - **System monitoring**: Multiple subsystems contributing to aggregate metric
 
-<img src="https://raw.githubusercontent.com/oliparson/infer-hmm/master/bayes-hmm.png" alt="Bayesian HMM graphical model" style="width: 25% height: 25%;"/>
-
 ---
 
 ## Requirements
@@ -93,18 +91,6 @@ dotnet run --project HiddenMarkovModel <csv_file> [num_states]
 - `csv_file` - Path to CSV file with observations (one value per line)
 - `num_states` - Number of hidden states (default: 2)
 
-**Practical Examples:**
-```bash
-# Binary state detection (e.g., machine on/off, normal/anomaly)
-dotnet run --project HiddenMarkovModel sensor_data.csv 2
-
-# Market regime detection (bullish/bearish/sideways)
-dotnet run --project HiddenMarkovModel stock_returns.csv 3
-
-# System with multiple operating modes
-dotnet run --project HiddenMarkovModel system_metrics.csv 4
-```
-
 **Input Format:**
 ```csv
 # Temperature sensor readings
@@ -155,12 +141,6 @@ File `<input>.results.csv`:
 - ✅ Handles overlapping and imbalanced states
 - ✅ Data-driven priors with symmetry breaking
 
-**Interpretation:**
-- **State Distribution**: Frequency of each state
-- **Transition Matrix**: Probability of switching between states
-  - High diagonal = stable states (low switching)
-  - Off-diagonal = transition probabilities
-
 ### Generation Mode
 
 Create synthetic HMM data with known parameters for testing and validation.
@@ -195,27 +175,6 @@ dotnet run --project HiddenMarkovModel -- -g multi.csv 1000 4 5,1 15,2 25,3 35,1
 
 1. **`<output>.csv`** - Observations with metadata header containing true parameters
 2. **`<output>.states.csv`** - True hidden state sequence for validation
-
-**Parameter Guidelines:**
-- **Mean separation**: `|mean₁ - mean₂| / √variance` > 3 for easy separation
-- **Variance**: 
-  - Low (1-5): Tight clusters, easy inference
-  - Medium (5-15): Realistic overlap
-  - High (15+): Heavy overlap, challenging
-
-**Validation Workflow:**
-```bash
-# 1. Generate with known parameters
-dotnet run --project HiddenMarkovModel -- -g test.csv 500 2 10,3 25,3
-
-# 2. Run inference
-dotnet run --project HiddenMarkovModel test.csv 2
-
-# 3. Compare results:
-#    - Check inferred means vs true (10, 25)
-#    - Compare test.results.csv with test.states.csv
-#    - Evaluate state recovery accuracy
-```
 
 ---
 
@@ -252,18 +211,6 @@ dotnet run --project FactorialHiddenMarkovModel <csv_file> <num_chains> <states_
 - `csv_file` - Path to CSV file with observations
 - `num_chains` - Number of independent chains (2-3 supported)
 - `states_per_chain` - Number of states for each chain (space-separated)
-
-**Practical Examples:**
-```bash
-# Financial decomposition: trend (2 states) + seasonal (2 states)
-dotnet run --project FactorialHiddenMarkovModel prices.csv 2 2 2
-
-# Signal with 3 sources: 2, 3, and 2 states
-dotnet run --project FactorialHiddenMarkovModel signal.csv 3 2 3 2
-
-# Asymmetric chains
-dotnet run --project FactorialHiddenMarkovModel data.csv 2 3 2
-```
 
 **Input Format:**
 Same as standard HMM - one observation per line.
@@ -374,168 +321,10 @@ dotnet run --project FactorialHiddenMarkovModel -- -g <output> <length> <chains>
 - `states` - States per chain (space-separated)
 - `params` - Optional: `mean,variance` for each state in each chain
 
-**Examples:**
-```bash
-# Random parameters: 2 chains × 2 states
-dotnet run --project FactorialHiddenMarkovModel -- -g fhmm.csv 200 2 2 2
-
-# Specified parameters: 2 chains × 2 states
-dotnet run --project FactorialHiddenMarkovModel -- -g fhmm.csv 200 2 2 2 -5,2 5,2 -3,1 3,1
-# Interpretation: Chain0: State0(-5,var=2), State1(5,var=2)
-#                 Chain1: State0(-3,var=1), State1(3,var=1)
-
-# 3 chains
-dotnet run --project FactorialHiddenMarkovModel -- -g fhmm3.csv 300 3 2 2 2 -10,3 10,3 -5,2 5,2 -3,1 3,1
-```
-
 **Output Files:**
 
 1. **`<output>.csv`** - Observations with full metadata
 2. **`<output>.chains.csv`** - True state sequences for all chains
-
-**Validation Workflow:**
-```bash
-# 1. Generate with known parameters
-dotnet run --project FactorialHiddenMarkovModel -- -g test.csv 200 2 2 2 -5,2 5,2 -3,1 3,1
-
-# 2. Run inference multiple times
-bash run_multiple.sh test.csv 2 2 2 10
-
-# 3. Compare best result:
-#    - test.chains.csv (true states)
-#    - test.factorial_best.csv (inferred states)
-#    - Check if means close to true: Chain0=[-5,5], Chain1=[-3,3]
-```
-
-### Understanding Model Evidence
-
-**Model Evidence (log marginal likelihood)** quantifies how well the model explains the data:
-
-- **Higher (less negative)** = better fit
-- Balances fit quality AND model complexity
-- Essential for comparing runs
-
-**Typical differences:**
-- **±10-20**: Marginal improvement
-- **±50+**: Significant improvement
-- **±200+**: One run clearly failed
-
-**Example:**
-```
-Run 1: -34367.99  (bad local optimum)
-Run 2: -33102.64  (good)
-Run 5: -33101.82  (best!)
-```
-→ Run 5 is ~1266 units better than Run 1 (use Run 5!)
-
-### Advanced: Comparing Viterbi vs Local Decoding
-
-To see the difference between global (Viterbi) and local (marginal) decoding:
-
-1. In `FactorialHiddenMarkovModel/Program.cs`, change line 283:
-   ```csharp
-   if (true) // Set to true to see comparison
-   ```
-
-2. Run inference:
-   ```bash
-   dotnet run --project FactorialHiddenMarkovModel data.csv 2 2 2
-   ```
-
-3. Output will show:
-   ```
-   Comparing Viterbi (global) vs Marginal (local) decoding:
-     Chain 0: 730 differences (7.3% of time steps)
-     Chain 1: 309 differences (3.1% of time steps)
-   ```
-
-**Interpretation:** Viterbi changes 3-7% of state assignments by considering temporal dependencies!
-
----
-
-## When to Use Which Model
-
-### Use Hidden Markov Model (Single Chain) when:
-
-- ✅ Data has **one dominant latent process**
-- ✅ Looking for **regime changes** or **state switches**
-- ✅ Need **fast, reliable inference**
-- ✅ Examples:
-  - Machine on/off states
-  - Market regimes (bull/bear)
-  - Anomaly detection (normal/abnormal)
-  - Speech recognition phonemes
-
-**Characteristics:**
-- Fast inference (50 iterations, ~1-5 seconds)
-- Robust with K-means initialization
-- Reliable for 2-5 states
-- Works with 50+ observations
-
-### Use Factorial Hidden Markov Model (Multiple Chains) when:
-
-- ✅ Data is **sum of multiple independent sources**
-- ✅ Need to **decompose** signal into components
-- ✅ Can run **multiple inference attempts**
-- ✅ Examples:
-  - Trend + Seasonal + Noise decomposition
-  - Multiple sensor sources
-  - Multi-factor financial models
-  - Additive signal sources
-
-**Characteristics:**
-- Slower inference (75 iterations, ~30-60 seconds)
-- Requires multiple runs (10-20 recommended)
-- Challenging with overlapping components
-- Needs 200+ observations for reliability
-- Model evidence selection essential
-
-### Decision Tree
-
-```
-Is your data the SUM of multiple independent processes?
-│
-├─ NO → Use Hidden Markov Model
-│        (Standard HMM for single latent chain)
-│
-└─ YES → Use Factorial Hidden Markov Model
-         (Multiple independent chains)
-         ⚠️  Remember: Run 10-20 times, pick best evidence!
-```
-
----
-
-## Building
-
-### Development Build
-```bash
-# Build both projects
-dotnet build
-
-# Build specific project
-dotnet build HiddenMarkovModel/HiddenMarkovModel.csproj
-dotnet build FactorialHiddenMarkovModel/FactorialHiddenMarkovModel.csproj
-```
-
-### Production Build
-```bash
-# Create standalone executables (no .NET runtime required)
-
-# For macOS (Apple Silicon)
-dotnet publish HiddenMarkovModel -c Release -r osx-arm64 --self-contained
-dotnet publish FactorialHiddenMarkovModel -c Release -r osx-arm64 --self-contained
-
-# For macOS (Intel)
-dotnet publish HiddenMarkovModel -c Release -r osx-x64 --self-contained
-
-# For Linux
-dotnet publish HiddenMarkovModel -c Release -r linux-x64 --self-contained
-
-# For Windows
-dotnet publish HiddenMarkovModel -c Release -r win-x64 --self-contained
-```
-
-Executables will be in `bin/Release/net8.0/<runtime>/publish/`
 
 ---
 
