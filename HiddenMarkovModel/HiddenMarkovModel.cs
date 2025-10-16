@@ -2,12 +2,14 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
-using MicrosoftResearch.Infer.Models;
-using MicrosoftResearch.Infer;
-using MicrosoftResearch.Infer.Distributions;
-using MicrosoftResearch.Infer.Maths;
-using MicrosoftResearch.Infer.Utils;
+using Microsoft.ML.Probabilistic;
+using Microsoft.ML.Probabilistic.Distributions;
+using Microsoft.ML.Probabilistic.Math;
+using Microsoft.ML.Probabilistic.Models;
+using Microsoft.ML.Probabilistic.Algorithms;
+using Microsoft.ML.Probabilistic.Utilities;
 using System.IO;
+using Range = Microsoft.ML.Probabilistic.Models.Range;
 
 namespace HiddenMarkovModel
 {
@@ -135,11 +137,11 @@ namespace HiddenMarkovModel
             Engine = new InferenceEngine(new ExpectationPropagation());
             //Engine = new InferenceEngine(new VariationalMessagePassing());
             //Engine = new InferenceEngine(new GibbsSampling());
-            Engine.ShowFactorGraph = true;
+            Engine.ShowFactorGraph = false;
             Engine.ShowWarnings = true;
             Engine.ShowProgress = true;
             Engine.Compiler.WriteSourceFiles = true;
-            Engine.NumberOfIterations = 15;
+            Engine.NumberOfIterations = 50;  // Increased from 15 to allow better convergence
             Engine.ShowTimings = true;
             Engine.ShowSchedule = false;
 
@@ -152,6 +154,22 @@ namespace HiddenMarkovModel
         {
             VariableArray<Discrete> zinit = Variable<Discrete>.Array(T);
             zinit.ObservedValue = Util.ArrayInit(T.SizeAsInt, t => Discrete.PointMass(Rand.Int(K.SizeAsInt), K.SizeAsInt));
+            States[T].InitialiseTo(zinit[T]);
+        }
+
+        /// <summary>
+        /// Initialises the states from provided cluster assignments (e.g., from K-means).
+        /// </summary>
+        /// <param name="assignments">Array of state assignments for each time step.</param>
+        public void InitialiseStatesFromAssignments(int[] assignments)
+        {
+            if (assignments.Length != T.SizeAsInt)
+            {
+                throw new ArgumentException($"Assignments array length ({assignments.Length}) must match chain length ({T.SizeAsInt})");
+            }
+            
+            VariableArray<Discrete> zinit = Variable<Discrete>.Array(T);
+            zinit.ObservedValue = Util.ArrayInit(T.SizeAsInt, t => Discrete.PointMass(assignments[t], K.SizeAsInt));
             States[T].InitialiseTo(zinit[T]);
         }
 
@@ -186,6 +204,118 @@ namespace HiddenMarkovModel
             EmitPrecPosterior = Engine.Infer<Gamma[]>(EmitPrec);
             StatesPosterior = Engine.Infer<Discrete[]>(States);
             ModelEvidencePosterior = Engine.Infer<Bernoulli>(ModelEvidence);
+        }
+
+        /// <summary>
+        /// Computes the most likely state sequence using LOCAL (marginal) decoding.
+        /// WARNING: This picks the most likely state at each time step independently.
+        /// For globally optimal paths, use GetViterbiStates() instead.
+        /// </summary>
+        /// <returns>Array of state indices.</returns>
+        public int[] GetMAPStates()
+        {
+            return StatesPosterior.Select(s => s.GetMode()).ToArray();
+        }
+
+        /// <summary>
+        /// Computes the globally optimal state sequence using the Viterbi algorithm.
+        /// This finds the most probable joint path considering temporal dependencies.
+        /// </summary>
+        /// <returns>Array of state indices representing the Viterbi path.</returns>
+        public int[] GetViterbiStates()
+        {
+            int T_size = T.SizeAsInt;
+            int K_size = K.SizeAsInt;
+            
+            // Get inferred parameters
+            double[] means = EmitMeanPosterior.Select(g => g.GetMean()).ToArray();
+            double[] precs = EmitPrecPosterior.Select(g => g.GetMean()).ToArray();
+            
+            // Get transition probabilities
+            double[][] transProbs = new double[K_size][];
+            for (int i = 0; i < K_size; i++)
+            {
+                Vector trans = CPTTransPosterior[i].GetMean();
+                transProbs[i] = new double[K_size];
+                for (int j = 0; j < K_size; j++)
+                {
+                    transProbs[i][j] = trans[j];
+                }
+            }
+            
+            // Get initial state probabilities
+            Vector initProbs = ProbInitPosterior.GetMean();
+            
+            // Viterbi matrices
+            double[,] delta = new double[T_size, K_size];  // Max probability at time t in state k
+            int[,] psi = new int[T_size, K_size];          // Backpointer for path reconstruction
+            
+            // Initialization (t=0)
+            for (int k = 0; k < K_size; k++)
+            {
+                double variance = 1.0 / precs[k];
+                double emissionLogProb = LogGaussianPDF(EmitData[0], means[k], variance);
+                delta[0, k] = Math.Log(initProbs[k]) + emissionLogProb;
+                psi[0, k] = 0;
+            }
+            
+            // Recursion (t=1 to T-1)
+            for (int t = 1; t < T_size; t++)
+            {
+                for (int k = 0; k < K_size; k++)
+                {
+                    double maxProb = double.NegativeInfinity;
+                    int maxState = 0;
+                    
+                    // Find best previous state
+                    for (int j = 0; j < K_size; j++)
+                    {
+                        double prob = delta[t - 1, j] + Math.Log(transProbs[j][k]);
+                        if (prob > maxProb)
+                        {
+                            maxProb = prob;
+                            maxState = j;
+                        }
+                    }
+                    
+                    // Add emission probability
+                    double variance = 1.0 / precs[k];
+                    double emissionLogProb = LogGaussianPDF(EmitData[t], means[k], variance);
+                    delta[t, k] = maxProb + emissionLogProb;
+                    psi[t, k] = maxState;
+                }
+            }
+            
+            // Termination: find best final state
+            double maxFinalProb = double.NegativeInfinity;
+            int bestFinalState = 0;
+            for (int k = 0; k < K_size; k++)
+            {
+                if (delta[T_size - 1, k] > maxFinalProb)
+                {
+                    maxFinalProb = delta[T_size - 1, k];
+                    bestFinalState = k;
+                }
+            }
+            
+            // Backtracking
+            int[] viterbiStates = new int[T_size];
+            viterbiStates[T_size - 1] = bestFinalState;
+            for (int t = T_size - 2; t >= 0; t--)
+            {
+                viterbiStates[t] = psi[t + 1, viterbiStates[t + 1]];
+            }
+            
+            return viterbiStates;
+        }
+        
+        /// <summary>
+        /// Computes the log of the Gaussian probability density function.
+        /// </summary>
+        private double LogGaussianPDF(double x, double mean, double variance)
+        {
+            double diff = x - mean;
+            return -0.5 * Math.Log(2 * Math.PI * variance) - (diff * diff) / (2 * variance);
         }
 
         /// <summary>
